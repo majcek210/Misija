@@ -11,8 +11,8 @@ android {
         applicationId = "dev.tester.mockgps"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "2.0"
+        versionCode = 3
+        versionName = "2.1"
     }
 
     // Fixed debug key so every CI build installs over the previous one.

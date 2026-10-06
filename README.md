@@ -21,7 +21,7 @@ Or build yourself: Android Studio > Build > Build APK(s), or `./gradlew assemble
 ## Floating panel
 - Drag the title to move it. `▾` folds, `↺` goes back to your real location, `✕` stops.
 - Joystick: hold and push in a direction to move; push further to go faster. Let go to stop.
-- **Speed** cycles Walk (5 km/h), Jog (11), Bike (22), Car (54).
+- **Speed** cycles Creep (2 km/h), Walk (5), Jog (11), Bike (22), Car (54), Highway (126).
 
 GPS, network and (Android 12+) fused test providers get a fix every second
 (accuracy 5 m). They are removed when the service stops.

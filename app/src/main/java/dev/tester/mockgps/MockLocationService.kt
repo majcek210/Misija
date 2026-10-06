@@ -49,8 +49,8 @@ class MockLocationService : Service() {
         private const val MOVE_TICK_MS = 100L
 
         // Joystick top speeds in m/s, with labels.
-        private val SPEEDS = doubleArrayOf(1.4, 3.0, 6.0, 15.0)
-        private val SPEED_NAMES = arrayOf("Walk", "Jog", "Bike", "Car")
+        private val SPEEDS = doubleArrayOf(0.5, 1.4, 3.0, 6.0, 15.0, 35.0)
+        private val SPEED_NAMES = arrayOf("Creep", "Walk", "Jog", "Bike", "Car", "Highway")
 
         @Volatile
         var running = false
