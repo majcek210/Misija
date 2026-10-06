@@ -11,8 +11,8 @@ android {
         applicationId = "dev.tester.mockgps"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "2.1"
+        versionCode = 4
+        versionName = "2.2"
     }
 
     // Fixed debug key so every CI build installs over the previous one.
@@ -43,4 +43,5 @@ android {
 dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("org.osmdroid:osmdroid-android:6.1.18")
 }

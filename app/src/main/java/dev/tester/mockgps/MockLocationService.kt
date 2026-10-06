@@ -32,8 +32,8 @@ import android.widget.Toast
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
-import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 class MockLocationService : Service() {
 
@@ -42,11 +42,14 @@ class MockLocationService : Service() {
         const val EXTRA_LNG = "lng"
         const val EXTRA_ALT = "alt"
         const val ACTION_STOP = "dev.tester.mockgps.STOP"
+        const val ACTION_GOTO = "dev.tester.mockgps.GOTO"
+        const val EXTRA_WALK = "walk"
 
         private const val CHANNEL_ID = "mock"
         private const val NOTIF_ID = 1
         private const val METERS_PER_DEG_LAT = 111_320.0
         private const val MOVE_TICK_MS = 100L
+        private const val JOY_DEAD_ZONE = 0.08
 
         // Joystick top speeds in m/s, with labels.
         private val SPEEDS = doubleArrayOf(0.5, 1.4, 3.0, 6.0, 15.0, 35.0)
@@ -54,6 +57,14 @@ class MockLocationService : Service() {
 
         @Volatile
         var running = false
+            private set
+
+        // Last mocked position, read by the map screen.
+        @Volatile
+        var posLat = 0.0
+            private set
+        @Volatile
+        var posLng = 0.0
             private set
     }
 
@@ -71,10 +82,14 @@ class MockLocationService : Service() {
     private var alt = 0.0
     private var speedIndex = 0
 
-    // Joystick deflection, -1..1 (x+ = east, y+ = north).
-    private var joyX = 0f
-    private var joyY = 0f
-    private var lastPushMs = 0L
+    // Joystick deflection after the response curve, -1..1 (x+ = east, y+ = north).
+    private var joyX = 0.0
+    private var joyY = 0.0
+    // Point picked on the map that we're walking to, as (lat, lng).
+    private var walkTarget: DoubleArray? = null
+    // Movement during the last tick, reported with each fix.
+    private var speedMs = 0f
+    private var bearingDeg = 0f
 
     private var panel: LinearLayout? = null
     private lateinit var body: LinearLayout
@@ -83,22 +98,46 @@ class MockLocationService : Service() {
     private lateinit var coordText: TextView
     private lateinit var speedBtn: TextView
 
-    /** Moves the position while the joystick is held and keeps sending fixes. */
+    /**
+     * Moves the position (joystick or map target) and sends a fix every tick.
+     * Fixes go out every 100 ms even when standing still: with gaps between them,
+     * the real location can slip in and the position jumps back for a moment.
+     */
     private val tick = object : Runnable {
         override fun run() {
-            val moving = joyX != 0f || joyY != 0f
-            if (moving) {
-                val step = SPEEDS[speedIndex] * MOVE_TICK_MS / 1000.0
-                val northM = joyY * step
-                val eastM = joyX * step
-                curLat += northM / METERS_PER_DEG_LAT
-                curLng += eastM / (METERS_PER_DEG_LAT * cos(Math.toRadians(curLat)))
-                syncUi()
+            speedMs = 0f
+            val step = SPEEDS[speedIndex] * MOVE_TICK_MS / 1000.0
+            val target = walkTarget
+            if (joyX != 0.0 || joyY != 0.0) {
+                walkTarget = null
+                move(joyY * step, joyX * step)
+            } else if (target != null) {
+                walkToward(target, step)
             }
-            val now = SystemClock.elapsedRealtime()
-            // 1 fix per second when still, 2 per second while moving.
-            if (now - lastPushMs >= if (moving) 500 else 1000) pushLocation()
+            pushLocation()
             if (running) handler.postDelayed(this, MOVE_TICK_MS)
+        }
+    }
+
+    private fun move(northM: Double, eastM: Double) {
+        curLat += northM / METERS_PER_DEG_LAT
+        curLng += eastM / (METERS_PER_DEG_LAT * cos(Math.toRadians(curLat)))
+        speedMs = (hypot(northM, eastM) * 1000.0 / MOVE_TICK_MS).toFloat()
+        bearingDeg = ((Math.toDegrees(atan2(eastM, northM)) + 360) % 360).toFloat()
+        syncUi()
+    }
+
+    private fun walkToward(target: DoubleArray, step: Double) {
+        val res = FloatArray(2)
+        Location.distanceBetween(curLat, curLng, target[0], target[1], res)
+        if (res[0] <= step) {
+            curLat = target[0]
+            curLng = target[1]
+            walkTarget = null
+            syncUi()
+        } else {
+            val b = Math.toRadians(res[1].toDouble())
+            move(cos(b) * step, sin(b) * step)
         }
     }
 
@@ -119,6 +158,10 @@ class MockLocationService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_GOTO) {
+            if (running) goTo(intent) else stopSelf()
+            return START_NOT_STICKY
+        }
         if (intent == null || !intent.hasExtra(EXTRA_LAT)) {
             fail("No starting location. Open the app and press Start.")
             return START_NOT_STICKY
@@ -129,6 +172,7 @@ class MockLocationService : Service() {
         alt = intent.getDoubleExtra(EXTRA_ALT, 0.0)
         curLat = realLat
         curLng = realLng
+        walkTarget = null
 
         if (providers.isEmpty()) {
             val err = setupProviders()
@@ -250,18 +294,16 @@ class MockLocationService : Service() {
     }
 
     private fun pushLocation() {
-        lastPushMs = SystemClock.elapsedRealtime()
-        val mag = min(1.0, hypot(joyX.toDouble(), joyY.toDouble()))
-        val speedMs = (SPEEDS[speedIndex] * mag).toFloat()
-        val heading = ((Math.toDegrees(atan2(joyX.toDouble(), joyY.toDouble())) + 360) % 360).toFloat()
+        posLat = curLat
+        posLng = curLng
         for (name in providers) {
             val loc = Location(name).apply {
                 latitude = curLat
                 longitude = curLng
                 altitude = alt
-                accuracy = 5f
+                accuracy = 3f
                 speed = speedMs
-                if (speedMs > 0f) bearing = heading
+                bearing = bearingDeg
                 time = System.currentTimeMillis()
                 elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
                 verticalAccuracyMeters = 5f
@@ -323,6 +365,7 @@ class MockLocationService : Service() {
         header.addView(title)
         header.addView(foldBtn)
         header.addView(action("↺") { resetToMyLocation() })
+        header.addView(action("🗺") { openMap() })
         header.addView(action("✕") { stopSelf() })
         root.addView(header)
 
@@ -344,11 +387,7 @@ class MockLocationService : Service() {
         body.addView(distText)
         body.addView(coordText)
 
-        val joystick = JoystickView(ctx) { x, y ->
-            joyX = x
-            joyY = y
-            if (x == 0f && y == 0f) pushLocation() // send the stop right away
-        }
+        val joystick = JoystickView(ctx) { x, y -> setJoystick(x.toDouble(), y.toDouble()) }
         body.addView(joystick, LinearLayout.LayoutParams(dp(180), dp(180)).apply {
             topMargin = dp(8)
             bottomMargin = dp(4)
@@ -424,7 +463,46 @@ class MockLocationService : Service() {
         foldBtn.text = if (folded) "▸" else "▾"
     }
 
+    /**
+     * Small dead zone, then a squared curve: small pushes move very slowly so
+     * you can line up on a spot, full deflection still gives the top speed.
+     */
+    private fun setJoystick(x: Double, y: Double) {
+        val mag = hypot(x, y)
+        if (mag < JOY_DEAD_ZONE) {
+            joyX = 0.0
+            joyY = 0.0
+            return
+        }
+        val t = ((mag - JOY_DEAD_ZONE) / (1 - JOY_DEAD_ZONE)).coerceAtMost(1.0)
+        joyX = x / mag * t * t
+        joyY = y / mag * t * t
+    }
+
+    private fun goTo(intent: Intent) {
+        val lat = intent.getDoubleExtra(EXTRA_LAT, curLat)
+        val lng = intent.getDoubleExtra(EXTRA_LNG, curLng)
+        if (intent.getBooleanExtra(EXTRA_WALK, true)) {
+            walkTarget = doubleArrayOf(lat, lng)
+        } else {
+            walkTarget = null
+            curLat = lat
+            curLng = lng
+            pushLocation()
+        }
+        syncUi()
+    }
+
+    private fun openMap() {
+        try {
+            startActivity(Intent(this, MapActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: Exception) {
+            Toast.makeText(this, "Couldn't open the map: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun resetToMyLocation() {
+        walkTarget = null
         curLat = realLat
         curLng = realLng
         syncUi()
@@ -441,7 +519,16 @@ class MockLocationService : Service() {
         if (!::distText.isInitialized) return
         val d = FloatArray(1)
         Location.distanceBetween(realLat, realLng, curLat, curLng, d)
-        distText.text = if (d[0] < 0.5f) "At my location" else "${formatDist(d[0])} from start"
+        val target = walkTarget
+        distText.text = if (target != null) {
+            val left = FloatArray(1)
+            Location.distanceBetween(curLat, curLng, target[0], target[1], left)
+            "Walking, ${formatDist(left[0])} to go"
+        } else if (d[0] < 0.5f) {
+            "At my location"
+        } else {
+            "${formatDist(d[0])} from start"
+        }
         coordText.text = "%.6f, %.6f".format(curLat, curLng)
         speedBtn.text = "Speed: ${SPEED_NAMES[speedIndex]} (%.0f km/h)".format(SPEEDS[speedIndex] * 3.6)
     }

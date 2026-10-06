@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Map tiles (OpenStreetMap) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
         android:allowBackup="false"
@@ -26,6 +29,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Own task, so closing the map returns to the app that was open before it. -->
+        <activity
+            android:name=".MapActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:label="Pick a spot"
+            android:taskAffinity="dev.tester.mockgps.map" />
 
         <service
             android:name=".MockLocationService"
