@@ -20,7 +20,7 @@ class Prefs(context: Context) {
         get() = sp.getInt("panel_y", 200)
         set(v) = sp.edit().putInt("panel_y", v).apply()
 
-    var rangeIndex: Int
-        get() = sp.getInt("range_index", 1)
-        set(v) = sp.edit().putInt("range_index", v).apply()
+    var speedIndex: Int
+        get() = sp.getInt("speed_index", 0)
+        set(v) = sp.edit().putInt("speed_index", v).apply()
 }

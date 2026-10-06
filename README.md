@@ -1,8 +1,8 @@
 # Mock GPS (QA tool)
 
 Android test tool (package `dev.tester.mockgps`, minSdk 26, targetSdk 34) that
-starts from your real position and lets you move the mocked location north/south
-with a slider in a floating panel.
+starts from your real position and lets you walk the mocked location in any
+direction with a joystick in a floating panel.
 
 ## Get the APK
 Every push builds `MockGPS.apk` with GitHub Actions and attaches it to a
@@ -20,9 +20,8 @@ Or build yourself: Android Studio > Build > Build APK(s), or `./gradlew assemble
 
 ## Floating panel
 - Drag the title to move it. `▾` folds, `↺` goes back to your real location, `✕` stops.
-- Slider: up = north, down = south, relative to the centre point.
-- `▲ +5 m` / `▼ −5 m` nudge; **Range** cycles ±200 m / 1 km / 5 km / 20 km.
-- **Pin here** makes the current spot the new slider centre so you can keep going.
+- Joystick: hold and push in a direction to move; push further to go faster. Let go to stop.
+- **Speed** cycles Walk (5 km/h), Jog (11), Bike (22), Car (54).
 
 GPS, network and (Android 12+) fused test providers get a fix every second
 (accuracy 5 m). They are removed when the service stops.

@@ -50,8 +50,8 @@ class MainActivity : AppCompatActivity() {
         })
         root.addView(TextView(this).apply {
             text = "Start takes your real position as the starting point. " +
-                "The floating panel's slider then moves the mocked position " +
-                "north (up) or south (down) from there."
+                "The floating panel's joystick then walks the mocked position " +
+                "in any direction from there."
             setPadding(0, dp(8), 0, dp(16))
         })
 
@@ -242,7 +242,7 @@ class MainActivity : AppCompatActivity() {
             .putExtra(MockLocationService.EXTRA_ALT, if (loc.hasAltitude()) loc.altitude else 0.0)
         ContextCompat.startForegroundService(this, i)
         setStatus(
-            "Started at %.6f, %.6f.\nUse the floating panel's slider to move up/down."
+            "Started at %.6f, %.6f.\nUse the joystick on the floating panel to move."
                 .format(loc.latitude, loc.longitude)
         )
         handler.postDelayed({ refreshStatus() }, 1500)

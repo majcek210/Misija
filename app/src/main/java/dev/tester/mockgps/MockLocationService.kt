@@ -26,12 +26,13 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.widget.FrameLayout
 import android.widget.LinearLayout
-import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
-import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.hypot
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 class MockLocationService : Service() {
@@ -45,9 +46,11 @@ class MockLocationService : Service() {
         private const val CHANNEL_ID = "mock"
         private const val NOTIF_ID = 1
         private const val METERS_PER_DEG_LAT = 111_320.0
-        private const val SLIDER_STEPS = 1000
-        private const val NUDGE_M = 5.0
-        private val RANGES_M = intArrayOf(200, 1000, 5000, 20000)
+        private const val MOVE_TICK_MS = 100L
+
+        // Joystick top speeds in m/s, with labels.
+        private val SPEEDS = doubleArrayOf(1.4, 3.0, 6.0, 15.0)
+        private val SPEED_NAMES = arrayOf("Walk", "Jog", "Bike", "Car")
 
         @Volatile
         var running = false
@@ -60,29 +63,42 @@ class MockLocationService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private val providers = mutableListOf<String>()
 
-    // Real position captured at start, and the current base (moved by "Pin").
+    // Real position captured at start, and the current mocked position.
     private var realLat = 0.0
     private var realLng = 0.0
-    private var baseLat = 0.0
-    private var baseLng = 0.0
+    private var curLat = 0.0
+    private var curLng = 0.0
     private var alt = 0.0
-    private var offsetM = 0.0 // positive = north
-    private var rangeIndex = 1
+    private var speedIndex = 0
+
+    // Joystick deflection, -1..1 (x+ = east, y+ = north).
+    private var joyX = 0f
+    private var joyY = 0f
+    private var lastPushMs = 0L
 
     private var panel: LinearLayout? = null
-    private var panelParams: WindowManager.LayoutParams? = null
     private lateinit var body: LinearLayout
     private lateinit var foldBtn: TextView
-    private lateinit var offsetText: TextView
+    private lateinit var distText: TextView
     private lateinit var coordText: TextView
-    private lateinit var rangeBtn: TextView
-    private lateinit var slider: SeekBar
-    private var ignoreSlider = false
+    private lateinit var speedBtn: TextView
 
+    /** Moves the position while the joystick is held and keeps sending fixes. */
     private val tick = object : Runnable {
         override fun run() {
-            pushLocation()
-            if (running) handler.postDelayed(this, 1000)
+            val moving = joyX != 0f || joyY != 0f
+            if (moving) {
+                val step = SPEEDS[speedIndex] * MOVE_TICK_MS / 1000.0
+                val northM = joyY * step
+                val eastM = joyX * step
+                curLat += northM / METERS_PER_DEG_LAT
+                curLng += eastM / (METERS_PER_DEG_LAT * cos(Math.toRadians(curLat)))
+                syncUi()
+            }
+            val now = SystemClock.elapsedRealtime()
+            // 1 fix per second when still, 2 per second while moving.
+            if (now - lastPushMs >= if (moving) 500 else 1000) pushLocation()
+            if (running) handler.postDelayed(this, MOVE_TICK_MS)
         }
     }
 
@@ -93,7 +109,7 @@ class MockLocationService : Service() {
         lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         prefs = Prefs(this)
-        rangeIndex = prefs.rangeIndex.coerceIn(RANGES_M.indices)
+        speedIndex = prefs.speedIndex.coerceIn(SPEEDS.indices)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -111,9 +127,8 @@ class MockLocationService : Service() {
         realLat = intent.getDoubleExtra(EXTRA_LAT, 0.0)
         realLng = intent.getDoubleExtra(EXTRA_LNG, 0.0)
         alt = intent.getDoubleExtra(EXTRA_ALT, 0.0)
-        baseLat = realLat
-        baseLng = realLng
-        offsetM = 0.0
+        curLat = realLat
+        curLng = realLng
 
         if (providers.isEmpty()) {
             val err = setupProviders()
@@ -234,20 +249,19 @@ class MockLocationService : Service() {
         providers.clear()
     }
 
-    private fun currentLat() = baseLat + offsetM / METERS_PER_DEG_LAT
-    private fun currentLng() = baseLng
-
     private fun pushLocation() {
-        val lat = currentLat()
-        val lng = currentLng()
+        lastPushMs = SystemClock.elapsedRealtime()
+        val mag = min(1.0, hypot(joyX.toDouble(), joyY.toDouble()))
+        val speedMs = (SPEEDS[speedIndex] * mag).toFloat()
+        val heading = ((Math.toDegrees(atan2(joyX.toDouble(), joyY.toDouble())) + 360) % 360).toFloat()
         for (name in providers) {
             val loc = Location(name).apply {
-                latitude = lat
-                longitude = lng
+                latitude = curLat
+                longitude = curLng
                 altitude = alt
                 accuracy = 5f
-                speed = 0f
-                bearing = 0f
+                speed = speedMs
+                if (speedMs > 0f) bearing = heading
                 time = System.currentTimeMillis()
                 elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
                 verticalAccuracyMeters = 5f
@@ -267,10 +281,8 @@ class MockLocationService : Service() {
 
     // ---------------- floating panel ----------------
 
-    private fun rangeM() = RANGES_M[rangeIndex].toDouble()
-
-    private fun formatDist(m: Int): String =
-        if (abs(m) >= 1000) "%.1f km".format(m / 1000.0) else "$m m"
+    private fun formatDist(m: Float): String =
+        if (m >= 1000f) "%.2f km".format(m / 1000f) else "${m.roundToInt()} m"
 
     @SuppressLint("ClickableViewAccessibility")
     private fun showPanel() {
@@ -284,17 +296,6 @@ class MockLocationService : Service() {
             gravity = Gravity.CENTER
             setPadding(dp(10), dp(6), dp(10), dp(6))
             setOnClickListener { onClick() }
-        }
-
-        fun pill(label: String, onClick: () -> Unit) = action(label, onClick).apply {
-            textSize = 14f
-            background = GradientDrawable().apply {
-                cornerRadius = dp(8).toFloat()
-                setColor(Color.argb(255, 60, 64, 72))
-            }
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(6) }
         }
 
         val root = LinearLayout(ctx).apply {
@@ -325,65 +326,44 @@ class MockLocationService : Service() {
         header.addView(action("✕") { stopSelf() })
         root.addView(header)
 
-        // Body: vertical slider on the left, info + buttons on the right
         body = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
-        val sliderLen = dp(220)
-        val sliderThick = dp(48)
-        slider = SeekBar(ctx).apply {
-            max = SLIDER_STEPS
-            progress = SLIDER_STEPS / 2
-            rotation = 270f // right becomes up, so higher value = north
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(s: SeekBar, p: Int, fromUser: Boolean) {
-                    if (ignoreSlider || !fromUser) return
-                    offsetM = ((p - SLIDER_STEPS / 2).toDouble() / (SLIDER_STEPS / 2)) * rangeM()
-                    offsetM = offsetM.roundToInt().toDouble()
-                    syncUi(updateSlider = false)
-                    pushLocation()
-                }
-                override fun onStartTrackingTouch(s: SeekBar) {}
-                override fun onStopTrackingTouch(s: SeekBar) {}
-            })
-        }
-        val sliderBox = FrameLayout(ctx).apply {
-            clipChildren = false
-            addView(slider, FrameLayout.LayoutParams(sliderLen, sliderThick, Gravity.CENTER))
-        }
-        val sliderCol = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            clipChildren = false
-            addView(TextView(ctx).apply { text = "N ▲"; setTextColor(textColor) })
-            addView(sliderBox, LinearLayout.LayoutParams(sliderThick, sliderLen))
-            addView(TextView(ctx).apply { text = "S ▼"; setTextColor(textColor) })
         }
-        body.addView(sliderCol)
-
-        val info = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(8), 0, dp(4), 0)
-        }
-        offsetText = TextView(ctx).apply {
+        distText = TextView(ctx).apply {
             setTextColor(textColor)
-            textSize = 18f
+            textSize = 16f
             setTypeface(typeface, Typeface.BOLD)
+            gravity = Gravity.CENTER
         }
         coordText = TextView(ctx).apply {
             setTextColor(Color.LTGRAY)
             textSize = 12f
+            gravity = Gravity.CENTER
         }
-        info.addView(offsetText)
-        info.addView(coordText)
-        info.addView(pill("▲ +${NUDGE_M.toInt()} m") { nudge(NUDGE_M) })
-        info.addView(pill("▼ −${NUDGE_M.toInt()} m") { nudge(-NUDGE_M) })
-        rangeBtn = pill("") { cycleRange() }
-        info.addView(rangeBtn)
-        info.addView(pill("📌 Pin here") { pinHere() })
-        body.addView(info, LinearLayout.LayoutParams(dp(150), LinearLayout.LayoutParams.WRAP_CONTENT))
+        body.addView(distText)
+        body.addView(coordText)
+
+        val joystick = JoystickView(ctx) { x, y ->
+            joyX = x
+            joyY = y
+            if (x == 0f && y == 0f) pushLocation() // send the stop right away
+        }
+        body.addView(joystick, LinearLayout.LayoutParams(dp(180), dp(180)).apply {
+            topMargin = dp(8)
+            bottomMargin = dp(4)
+        })
+
+        speedBtn = action("") { cycleSpeed() }.apply {
+            textSize = 14f
+            background = GradientDrawable().apply {
+                cornerRadius = dp(8).toFloat()
+                setColor(Color.argb(255, 60, 64, 72))
+            }
+        }
+        body.addView(speedBtn, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(6) })
         root.addView(body)
 
         val params = WindowManager.LayoutParams(
@@ -428,7 +408,6 @@ class MockLocationService : Service() {
         try {
             wm.addView(root, params)
             panel = root
-            panelParams = params
         } catch (e: Exception) {
             fail("Can't show the floating panel. Allow \"Display over other apps\" for Mock GPS.")
         }
@@ -446,52 +425,24 @@ class MockLocationService : Service() {
     }
 
     private fun resetToMyLocation() {
-        baseLat = realLat
-        baseLng = realLng
-        offsetM = 0.0
+        curLat = realLat
+        curLng = realLng
         syncUi()
         pushLocation()
     }
 
-    private fun nudge(deltaM: Double) {
-        offsetM += deltaM
+    private fun cycleSpeed() {
+        speedIndex = (speedIndex + 1) % SPEEDS.size
+        prefs.speedIndex = speedIndex
         syncUi()
-        pushLocation()
     }
 
-    private fun cycleRange() {
-        rangeIndex = (rangeIndex + 1) % RANGES_M.size
-        prefs.rangeIndex = rangeIndex
-        offsetM = offsetM.coerceIn(-rangeM(), rangeM())
-        syncUi()
-        pushLocation()
-    }
-
-    /** Make the current position the new slider centre, so you can keep going further. */
-    private fun pinHere() {
-        baseLat = currentLat()
-        offsetM = 0.0
-        syncUi()
-        pushLocation()
-    }
-
-    private fun syncUi(updateSlider: Boolean = true) {
-        if (!::offsetText.isInitialized) return
-        val fromReal = ((currentLat() - realLat) * METERS_PER_DEG_LAT).roundToInt()
-        val dir = when {
-            fromReal > 0 -> "N"
-            fromReal < 0 -> "S"
-            else -> ""
-        }
-        offsetText.text = if (fromReal == 0) "At my location" else "${formatDist(abs(fromReal))} $dir"
-        coordText.text = "%.6f, %.6f".format(currentLat(), currentLng())
-        rangeBtn.text = "Range ±${formatDist(RANGES_M[rangeIndex])}"
-        if (updateSlider) {
-            val half = SLIDER_STEPS / 2
-            val p = half + (offsetM / rangeM() * half).roundToInt()
-            ignoreSlider = true
-            slider.progress = p.coerceIn(0, SLIDER_STEPS)
-            ignoreSlider = false
-        }
+    private fun syncUi() {
+        if (!::distText.isInitialized) return
+        val d = FloatArray(1)
+        Location.distanceBetween(realLat, realLng, curLat, curLng, d)
+        distText.text = if (d[0] < 0.5f) "At my location" else "${formatDist(d[0])} from start"
+        coordText.text = "%.6f, %.6f".format(curLat, curLng)
+        speedBtn.text = "Speed: ${SPEED_NAMES[speedIndex]} (%.0f km/h)".format(SPEEDS[speedIndex] * 3.6)
     }
 }
